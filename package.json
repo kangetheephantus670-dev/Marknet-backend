@@ -1,0 +1,19 @@
+{
+  "name": "marknet-backend",
+  "version": "1.0.0",
+  "description": "Backend for Marknet — handles M-Pesa STK Push payments and grants MikroTik hotspot access automatically.",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "node-routeros": "^1.6.9"
+  }
+}
