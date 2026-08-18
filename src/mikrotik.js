@@ -1,5 +1,8 @@
-const { RouterOSAPI } = require('node-routeros');
-const config = require('./config');
+// This file no longer connects to the router over the network — Render
+// (and most cloud PaaS platforms) can't open a VPN/socket into a home or
+// shop router. Instead, the ROUTER polls US for work: it fetches a small
+// RouterOS script from /api/mikrotik/queue.rsc every ~20s and runs it
+// locally. This module just builds that script's text.
 
 // Converts minutes into RouterOS's "1d02:30:00" style uptime-limit format.
 function minutesToRouterOsDuration(totalMinutes) {
@@ -19,78 +22,53 @@ function randomPassword(length = 6) {
   return out;
 }
 
-/**
- * Creates a hotspot user on the MikroTik router with a time-limited profile
- * matching the purchased plan. Returns the generated login credentials.
- *
- * `seed` identifies the customer for the username — normally their phone
- * number, but for orders matched by a pasted M-Pesa message (no phone on
- * file) the M-Pesa receipt code is used instead.
- *
- * `devices` > 1 is handled by creating N sibling accounts (username-2, -3, ...)
- * since RouterOS hotspot users are single-session by default.
- */
-async function provisionHotspotUser({ seed, plan, orderId }) {
-  const conn = new RouterOSAPI({
-    host: config.mikrotik.host,
-    user: config.mikrotik.user,
-    password: config.mikrotik.password,
-    port: config.mikrotik.port,
-    timeout: 8,
-  });
+// Defense in depth: even though every value that reaches this function has
+// already been validated upstream (phone digits, plan lookup, or a
+// receipt code matched by a strict regex), strip anything that isn't
+// alphanumeric/dash before it's ever interpolated into a RouterOS script.
+function sanitizeForRouterOs(value) {
+  return String(value || '').replace(/[^A-Za-z0-9_-]/g, '');
+}
 
-  const digits = (seed || '').replace(/\D/g, '');
-  const idPart = digits.length >= 6 ? digits.slice(-9) : String(seed || '').slice(-9);
+/**
+ * Builds the login credentials for a paid order. Pure computation, no
+ * network call — stored on the order right away so they're ready the
+ * instant the router polls for work.
+ */
+function generateCredentials({ seed, plan, orderId }) {
+  const cleanSeed = sanitizeForRouterOs(seed);
+  const digits = cleanSeed.replace(/\D/g, '');
+  const idPart = (digits.length >= 6 ? digits.slice(-9) : cleanSeed.slice(-9)) || 'cust';
   const baseUsername = `${idPart}-${orderId}`;
   const password = randomPassword();
+
+  const usernames = [];
+  for (let i = 0; i < plan.devices; i++) {
+    usernames.push(plan.devices > 1 ? `${baseUsername}-${i + 1}` : baseUsername);
+  }
+
+  return { usernames, password };
+}
+
+/**
+ * Turns already-generated credentials into the RouterOS commands that
+ * create them. Called each time /api/mikrotik/queue.rsc is served —
+ * deterministic given the same stored username/password, so it's safe to
+ * regenerate on every poll until the router acks the order.
+ */
+function buildAddCommands({ usernames, password, plan, hotspotServer, orderId }) {
   const limitUptime = minutesToRouterOsDuration(plan.durationMinutes);
+  const server = sanitizeForRouterOs(hotspotServer);
 
-  const created = [];
-
-  try {
-    await conn.connect();
-
-    for (let i = 0; i < plan.devices; i++) {
-      const username = plan.devices > 1 ? `${baseUsername}-${i + 1}` : baseUsername;
-
-      await conn.write('/ip/hotspot/user/add', [
-        `=name=${username}`,
-        `=password=${password}`,
-        `=server=${config.mikrotik.hotspotServer}`,
-        `=limit-uptime=${limitUptime}`,
-        `=comment=order:${orderId} ref:${seed}`,
-      ]);
-
-      created.push(username);
-    }
-  } finally {
-    conn.close();
-  }
-
-  // When devices > 1, all accounts share the same password; the customer
-  // logs the second device in with the "-2" username printed on-screen.
-  return { username: created.join(', '), password };
+  return usernames.map(
+    (username) =>
+      `/ip hotspot user add name="${sanitizeForRouterOs(username)}" password="${password}" server="${server}" limit-uptime="${limitUptime}" comment="order:${orderId}"`
+  );
 }
 
-/** Removes a hotspot user, e.g. for a manual refund or cleanup job. */
-async function removeHotspotUser(username) {
-  const conn = new RouterOSAPI({
-    host: config.mikrotik.host,
-    user: config.mikrotik.user,
-    password: config.mikrotik.password,
-    port: config.mikrotik.port,
-    timeout: 8,
-  });
-
-  try {
-    await conn.connect();
-    const rows = await conn.write('/ip/hotspot/user/print', [`?name=${username}`]);
-    for (const row of rows) {
-      await conn.write('/ip/hotspot/user/remove', [`=.id=${row['.id']}`]);
-    }
-  } finally {
-    conn.close();
-  }
-}
-
-module.exports = { provisionHotspotUser, removeHotspotUser, minutesToRouterOsDuration };
+module.exports = {
+  generateCredentials,
+  buildAddCommands,
+  minutesToRouterOsDuration,
+  sanitizeForRouterOs,
+};

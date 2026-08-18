@@ -27,12 +27,14 @@ module.exports = {
   },
 
   mikrotik: {
-    host: required('MIKROTIK_HOST'),
-    user: required('MIKROTIK_USER'),
-    password: required('MIKROTIK_PASSWORD'),
-    port: Number(process.env.MIKROTIK_PORT || 8728),
+    // The router polls us for work now — we never connect to it directly —
+    // so it just needs the hotspot server name to stamp onto new users.
     hotspotServer: process.env.MIKROTIK_HOTSPOT_SERVER || 'hotspot1',
   },
+
+  // Shared secret embedded in the URL the router's scheduler fetches.
+  // Keep this private — anyone with it could see/queue hotspot logins.
+  routerPollKey: required('ROUTER_POLL_KEY'),
 
   adminApiKey: required('ADMIN_API_KEY'),
 };
